@@ -41,13 +41,19 @@ async def handle_coach_command(chat_id: int, text: str) -> bool:
         return True
 
     if cmd == "/pause" and len(parts) >= 2:
-        db.update_customer_status(_resolve(parts[1]), "paused")
-        await telegram_agent.send_message(chat_id, "✅ pausiert")
+        try:
+            db.update_customer_status(_resolve(parts[1]), "paused")
+            await telegram_agent.send_message(chat_id, "✅ pausiert")
+        except ValueError as e:
+            await telegram_agent.send_message(chat_id, f"❌ {e}")
         return True
 
     if cmd == "/resume" and len(parts) >= 2:
-        db.update_customer_status(_resolve(parts[1]), "active")
-        await telegram_agent.send_message(chat_id, "✅ aktiv")
+        try:
+            db.update_customer_status(_resolve(parts[1]), "active")
+            await telegram_agent.send_message(chat_id, "✅ aktiv")
+        except ValueError as e:
+            await telegram_agent.send_message(chat_id, f"❌ {e}")
         return True
 
     if text.startswith("/"):
@@ -80,18 +86,24 @@ def _get_coach_by_chat_id(chat_id: int) -> dict | None:
 
 
 def _resolve(cid_short: str) -> str:
-    """Resolve an 8-char prefix to full UUID."""
+    """Resolve an 8-char prefix to full UUID.
+
+    Postgres rejects ILIKE on UUID columns, so we fetch ids
+    and match the prefix client-side.
+    """
     resp = (
         db.db()
         .table("customers")
         .select("id")
-        .ilike("id", f"{cid_short}%")
-        .limit(1)
         .execute()
     )
     if not resp.data:
-        raise ValueError(f"No customer matching {cid_short}")
-    return resp.data[0]["id"]
+        raise ValueError(f"Kein Kunde gefunden für '{cid_short}'")
+    cid_short_lower = cid_short.lower()
+    for row in resp.data:
+        if row["id"].lower().startswith(cid_short_lower):
+            return row["id"]
+    raise ValueError(f"Kein Kunde gefunden für '{cid_short}'")
 
 
 async def _cmd_list(chat_id: int, coach_id: str) -> None:
@@ -118,7 +130,12 @@ async def _cmd_today(chat_id: int, cid_short: str) -> None:
     from zoneinfo import ZoneInfo
     from app.config import settings
 
-    cid = _resolve(cid_short)
+    try:
+        cid = _resolve(cid_short)
+    except ValueError as e:
+        await telegram_agent.send_message(chat_id, f"❌ {e}")
+        return
+
     today_start = datetime.combine(
         date.today(), datetime.min.time(), tzinfo=ZoneInfo(settings.TZ)
     )
@@ -146,7 +163,12 @@ async def _cmd_today(chat_id: int, cid_short: str) -> None:
 async def _cmd_settarget(
     chat_id: int, cid_short: str, kcal: str, p: str, c: str, f: str
 ) -> None:
-    cid = _resolve(cid_short)
+    try:
+        cid = _resolve(cid_short)
+    except ValueError as e:
+        await telegram_agent.send_message(chat_id, f"❌ {e}")
+        return
+
     db.db().table("customer_profiles").update(
         {
             "daily_kcal_target": int(kcal),
