@@ -1,8 +1,9 @@
-"""Food-Log-Agent: parses free-text meal descriptions into structured entries.
+"""Food-Log-Agent: parses free-text meal descriptions and food photos into structured entries.
 
 Also handles general chat in 'active' state — one Claude call classifies the
 intent and returns either a food_log JSON or a chat reply.
 """
+import base64
 import json
 import re
 from datetime import date, datetime
@@ -60,6 +61,57 @@ WICHTIG: Antworte ausschließlich mit gültigem JSON. Keine Erklärungen davor/d
 """
 
 
+PHOTO_SYSTEM_PROMPT = """Du bist der persönliche Assistent eines Ernährungs- und Fitness-Coaches.
+Du sprichst mit dem Kunden auf Deutsch, locker und motivierend, per Du.
+
+AUFGABE: Analysiere das Foto, das der Kunde geschickt hat.
+
+DATENSCHUTZ — STRIKT:
+- Du analysierst AUSSCHLIESSLICH Fotos von Essen und Getränken.
+- Bei Personen, Selfies, Körperfotos, Screenshots, Memes, Landschaften, Tieren oder anderen Privatfotos: höflich ablehnen, KEINE Beschreibung der Person/des Inhalts geben.
+- Im Zweifel lieber ablehnen als raten.
+
+Antworte IMMER ausschließlich mit einem JSON-Block, nichts davor, nichts danach:
+
+Fall A — das Foto zeigt eindeutig Essen oder Getränke:
+```json
+{
+  "type": "food_log",
+  "meal_type": "fruehstueck" | "mittag" | "abend" | "snack",
+  "items": [
+    {"item": "Spiegelei", "qty": 2, "unit": "Stk", "kcal": 156, "protein_g": 13.0, "carbs_g": 1.0, "fat_g": 11.0},
+    {"item": "Vollkornbrot", "qty": 1, "unit": "Scheibe", "kcal": 80, "protein_g": 3.0, "carbs_g": 14.0, "fat_g": 1.0}
+  ],
+  "reply": "Kurze freundliche Bestätigung, was du erkannt hast, 1-2 Sätze auf Deutsch."
+}
+```
+
+Regeln für food_log:
+- Identifiziere alle sichtbaren Speisen und Getränke
+- Schätze Mengen aus Tellergröße/Vergleichsobjekten realistisch
+- Wenn der Kunde eine Caption mitgeschickt hat (z.B. "ca. 200g Reis"), nutze sie als Hilfe
+- meal_type aus Kontext (Caption, sichtbare Speisenart)
+
+Fall B — das Foto zeigt KEIN Essen (Person, Selfie, Körper, Landschaft, Screenshot, Meme, etc.):
+```json
+{
+  "type": "rejected",
+  "reply": "Hey, ich kann nur Fotos von Essen oder Getränken analysieren. Schick mir gern ein Foto von deiner nächsten Mahlzeit! 🍽️"
+}
+```
+
+Fall C — Foto zu unklar / dunkel / verschwommen:
+```json
+{
+  "type": "unclear",
+  "reply": "Ich erkenne auf dem Foto leider nicht eindeutig, was drauf ist — kannst du es nochmal bei besserem Licht aufnehmen oder mir kurz schreiben, was es war?"
+}
+```
+
+WICHTIG: Antworte ausschließlich mit gültigem JSON. Keine Erklärungen davor/dahinter.
+"""
+
+
 async def handle(customer: dict, text: str) -> None:
     """Main entry: analyze message, route to food_log or chat."""
     history = db.recent_messages(customer["id"], limit=10)
@@ -86,6 +138,52 @@ async def handle(customer: dict, text: str) -> None:
         )
 
 
+async def handle_photo(
+    customer: dict,
+    photo_bytes: bytes,
+    media_type: str,
+    caption: str | None = None,
+) -> None:
+    """Analyze a food photo with Claude Vision and log it like a text food entry."""
+    image_b64 = base64.b64encode(photo_bytes).decode("ascii")
+
+    user_text = "Hier ist mein Essen — bitte analysieren."
+    if caption:
+        user_text = f"Hier ist mein Essen. Hinweis vom Kunden: {caption}"
+
+    reply_raw, tokens, model = claude_client.ask_with_image(
+        PHOTO_SYSTEM_PROMPT,
+        image_b64,
+        media_type,
+        user_text,
+        max_tokens=900,
+    )
+
+    parsed = _parse_json(reply_raw)
+    if parsed is None:
+        await _send_and_log(
+            customer,
+            "Ich konnte dein Foto leider nicht analysieren — schick es nochmal oder beschreib es kurz in Worten.",
+            "food_log_photo",
+            model,
+            tokens,
+        )
+        return
+
+    ptype = parsed.get("type")
+    if ptype == "food_log":
+        await _handle_food_log(customer, parsed, model, tokens, agent_name="food_log_photo")
+    else:
+        # rejected / unclear / anything else → just relay reply
+        await _send_and_log(
+            customer,
+            parsed.get("reply", "…"),
+            "food_log_photo",
+            model,
+            tokens,
+        )
+
+
 # ------------------------------------------------------------------
 # Internals
 # ------------------------------------------------------------------
@@ -100,7 +198,13 @@ def _parse_json(raw: str) -> dict | None:
         return None
 
 
-async def _handle_food_log(customer: dict, parsed: dict, model: str, tokens: int) -> None:
+async def _handle_food_log(
+    customer: dict,
+    parsed: dict,
+    model: str,
+    tokens: int,
+    agent_name: str = "food_log",
+) -> None:
     items = parsed.get("items", [])
     total_kcal = int(sum(i.get("kcal", 0) for i in items))
     protein = round(sum(float(i.get("protein_g", 0)) for i in items), 1)
@@ -130,7 +234,7 @@ async def _handle_food_log(customer: dict, parsed: dict, model: str, tokens: int
     totals_line = _build_totals_line(customer)
     full_reply = f"{base_reply}\n\n<b>Heute bisher:</b> {totals_line}"
 
-    await _send_and_log(customer, full_reply, "food_log", model, tokens)
+    await _send_and_log(customer, full_reply, agent_name, model, tokens)
 
 
 def _build_totals_line(customer: dict) -> str:
