@@ -5,6 +5,9 @@ from app.config import settings
 
 _client: Optional[Anthropic] = None
 
+# Vision model — Haiku 4.5 has vision and is cheap. Switch to Sonnet if estimates feel off.
+VISION_MODEL_DEFAULT = "claude-haiku-4-5-20251001"
+
 
 def client() -> Anthropic:
     global _client
@@ -26,6 +29,45 @@ def ask(
         max_tokens=max_tokens,
         system=system_prompt,
         messages=messages,
+    )
+    text = "".join(block.text for block in resp.content if block.type == "text")
+    total_tokens = resp.usage.input_tokens + resp.usage.output_tokens
+    return text, total_tokens, model_used
+
+
+def ask_with_image(
+    system_prompt: str,
+    image_b64: str,
+    media_type: str,
+    user_text: str,
+    model: str | None = None,
+    max_tokens: int = 800,
+) -> tuple[str, int, str]:
+    """Send a single-image + text prompt to Claude Vision.
+
+    Returns (reply_text, total_tokens, model_used).
+    """
+    model_used = model or VISION_MODEL_DEFAULT
+    resp = client().messages.create(
+        model=model_used,
+        max_tokens=max_tokens,
+        system=system_prompt,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_b64,
+                        },
+                    },
+                    {"type": "text", "text": user_text},
+                ],
+            }
+        ],
     )
     text = "".join(block.text for block in resp.content if block.type == "text")
     total_tokens = resp.usage.input_tokens + resp.usage.output_tokens
