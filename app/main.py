@@ -47,8 +47,7 @@ async def telegram_webhook(
 
     # For MVP: one hardcoded coach. Later read from config / DB.
     # You set this after creating the coach row manually in Supabase.
-    import os
-    default_coach_id = os.getenv("DEFAULT_COACH_ID")
+    default_coach_id = settings.DEFAULT_COACH_ID
     if not default_coach_id:
         log.error("DEFAULT_COACH_ID not set")
         return {"ok": True}
