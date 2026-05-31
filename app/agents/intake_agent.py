@@ -79,7 +79,7 @@ Keine Markdown-Formatierung außerhalb des JSON-Blocks. Kein Text außerhalb des
 
 async def start(customer: dict) -> None:
     """Send the very first intake message."""
-    first_name = customer["first_name"]
+    first_name = telegram_agent.escape_html(customer["first_name"])
     greeting = (
         f"Hi {first_name}! 👋 Schön, dass du da bist. "
         f"Bevor wir richtig loslegen, brauche ich ein paar Infos von dir – "
@@ -122,7 +122,7 @@ async def handle_step(customer: dict, state: dict, user_text: str) -> None:
     history = [h for h in history if h["content"] != user_text or h["direction"] != "in"]
 
     messages = claude_client.build_messages_from_history(history, user_text)
-    raw, tokens, model = claude_client.ask(system, messages, max_tokens=500)
+    raw, tokens, model = await claude_client.ask(system, messages, max_tokens=500)
 
     data = _parse_json(raw)
     if data is None:
@@ -148,7 +148,8 @@ async def handle_step(customer: dict, state: dict, user_text: str) -> None:
         # ("keine Allergien") — also nicht filtern.
         collected[k] = v
 
-    reply_text = (data.get("reply") or "").strip()
+    # reply ist Claude-generiert → für Telegram-HTML escapen
+    reply_text = telegram_agent.escape_html((data.get("reply") or "").strip())
     claude_complete = bool(data.get("is_complete"))
 
     # 2) Server-seitige Wahrheit: ist wirklich alles da?

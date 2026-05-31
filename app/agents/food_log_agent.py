@@ -119,22 +119,28 @@ async def handle(customer: dict, text: str) -> None:
     history = [h for h in history if not (h["direction"] == "in" and h["content"] == text)]
 
     messages = claude_client.build_messages_from_history(history, text)
-    reply_raw, tokens, model = claude_client.ask(
+    reply_raw, tokens, model = await claude_client.ask(
         SYSTEM_PROMPT, messages, max_tokens=800
     )
 
     parsed = _parse_json(reply_raw)
     if parsed is None:
-        # Fallback: send raw reply as chat
-        await _send_and_log(customer, reply_raw, "food_log", model, tokens)
+        # Fallback: send raw reply as chat (Claude-generiert → escapen)
+        await _send_and_log(
+            customer, telegram_agent.escape_html(reply_raw), "food_log", model, tokens
+        )
         return
 
     if parsed.get("type") == "food_log":
         await _handle_food_log(customer, parsed, model, tokens)
     else:
-        # chat or checkin_hint — just relay the reply
+        # chat or checkin_hint — just relay the reply (Claude-generiert → escapen)
         await _send_and_log(
-            customer, parsed.get("reply", "…"), "food_log", model, tokens
+            customer,
+            telegram_agent.escape_html(parsed.get("reply", "…")),
+            "food_log",
+            model,
+            tokens,
         )
 
 
@@ -151,7 +157,7 @@ async def handle_photo(
     if caption:
         user_text = f"Hier ist mein Essen. Hinweis vom Kunden: {caption}"
 
-    reply_raw, tokens, model = claude_client.ask_with_image(
+    reply_raw, tokens, model = await claude_client.ask_with_image(
         PHOTO_SYSTEM_PROMPT,
         image_b64,
         media_type,
@@ -174,10 +180,10 @@ async def handle_photo(
     if ptype == "food_log":
         await _handle_food_log(customer, parsed, model, tokens, agent_name="food_log_photo")
     else:
-        # rejected / unclear / anything else → just relay reply
+        # rejected / unclear / anything else → just relay reply (Claude-generiert → escapen)
         await _send_and_log(
             customer,
-            parsed.get("reply", "…"),
+            telegram_agent.escape_html(parsed.get("reply", "…")),
             "food_log_photo",
             model,
             tokens,
@@ -229,8 +235,9 @@ async def _handle_food_log(
         }
     ).execute()
 
-    # Build reply: Claude's base reply + today's totals
-    base_reply = parsed.get("reply", "✅ Geloggt!")
+    # Build reply: Claude's base reply + today's totals.
+    # base_reply is Claude-generated → escape; the totals line is numeric/safe.
+    base_reply = telegram_agent.escape_html(parsed.get("reply", "✅ Geloggt!"))
     totals_line = _build_totals_line(customer)
     full_reply = f"{base_reply}\n\n<b>Heute bisher:</b> {totals_line}"
 
