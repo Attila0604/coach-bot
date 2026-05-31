@@ -1,12 +1,10 @@
 """Thin wrapper around Anthropic SDK with cost tracking."""
+import asyncio
 from typing import Optional
 from anthropic import Anthropic
 from app.config import settings
 
 _client: Optional[Anthropic] = None
-
-# Vision model — Haiku 4.5 has vision and is cheap. Switch to Sonnet if estimates feel off.
-VISION_MODEL_DEFAULT = "claude-haiku-4-5-20251001"
 
 
 def client() -> Anthropic:
@@ -16,26 +14,34 @@ def client() -> Anthropic:
     return _client
 
 
-def ask(
+async def ask(
     system_prompt: str,
     messages: list[dict],
     model: str | None = None,
     max_tokens: int = 1024,
 ) -> tuple[str, int, str]:
-    """Send a conversation to Claude. Returns (reply_text, total_tokens, model_used)."""
+    """Send a conversation to Claude. Returns (reply_text, total_tokens, model_used).
+
+    The Anthropic SDK call is synchronous, so it runs in a worker thread to avoid
+    blocking the FastAPI event loop while we wait for the model.
+    """
     model_used = model or settings.CLAUDE_MODEL_DEFAULT
-    resp = client().messages.create(
-        model=model_used,
-        max_tokens=max_tokens,
-        system=system_prompt,
-        messages=messages,
-    )
+
+    def _call():
+        return client().messages.create(
+            model=model_used,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=messages,
+        )
+
+    resp = await asyncio.to_thread(_call)
     text = "".join(block.text for block in resp.content if block.type == "text")
     total_tokens = resp.usage.input_tokens + resp.usage.output_tokens
     return text, total_tokens, model_used
 
 
-def ask_with_image(
+async def ask_with_image(
     system_prompt: str,
     image_b64: str,
     media_type: str,
@@ -45,30 +51,36 @@ def ask_with_image(
 ) -> tuple[str, int, str]:
     """Send a single-image + text prompt to Claude Vision.
 
-    Returns (reply_text, total_tokens, model_used).
+    Returns (reply_text, total_tokens, model_used). Runs in a worker thread
+    (see ask) so it does not block the event loop. The default model (Haiku 4.5)
+    has vision and is cheap; override via the `model` arg or CLAUDE_MODEL_DEFAULT.
     """
-    model_used = model or VISION_MODEL_DEFAULT
-    resp = client().messages.create(
-        model=model_used,
-        max_tokens=max_tokens,
-        system=system_prompt,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_b64,
+    model_used = model or settings.CLAUDE_MODEL_DEFAULT
+
+    def _call():
+        return client().messages.create(
+            model=model_used,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": image_b64,
+                            },
                         },
-                    },
-                    {"type": "text", "text": user_text},
-                ],
-            }
-        ],
-    )
+                        {"type": "text", "text": user_text},
+                    ],
+                }
+            ],
+        )
+
+    resp = await asyncio.to_thread(_call)
     text = "".join(block.text for block in resp.content if block.type == "text")
     total_tokens = resp.usage.input_tokens + resp.usage.output_tokens
     return text, total_tokens, model_used
