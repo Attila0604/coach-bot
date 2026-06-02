@@ -23,6 +23,7 @@ class Settings:
 
     # App
     APP_BASE_URL: str = os.getenv("APP_BASE_URL", "")
+    DEFAULT_COACH_ID: str = os.getenv("DEFAULT_COACH_ID", "")
     TZ: str = os.getenv("TZ", "Europe/Vienna")
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
