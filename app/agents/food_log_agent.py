@@ -6,6 +6,8 @@ Kann:
 - Deutsch / Ungarisch / Italienisch antworten
 - heutigen Trainingsplan anzeigen
 - heutigen Ernährungsplan anzeigen
+- freundlichere Antworten geben
+- Lebensmittel-Ersatzvorschläge machen
 """
 import base64
 import json
@@ -24,7 +26,7 @@ TZ = ZoneInfo(settings.TZ)
 LANG = {
     "de": {
         "reply_language": "Deutsch",
-        "tone": "Deutsch, locker und motivierend, per Du",
+        "tone": "Deutsch, freundlich, motivierend, persönlich, per Du, kurz und nicht kindisch",
         "logged": "✅ Geloggt!",
         "today_total": "Heute bisher",
         "remaining": "noch {remaining} kcal",
@@ -63,7 +65,7 @@ LANG = {
     },
     "hu": {
         "reply_language": "Ungarisch",
-        "tone": "Ungarisch, tegeződve, lazán és motiválóan",
+        "tone": "Ungarisch, tegeződve, barátságosan, motiválóan, személyesen, röviden és nem gyerekesen",
         "logged": "✅ Rögzítve!",
         "today_total": "Ma eddig",
         "remaining": "még {remaining} kcal",
@@ -102,7 +104,7 @@ LANG = {
     },
     "it": {
         "reply_language": "Italienisch",
-        "tone": "Italienisch, informale, motivante e dando del tu",
+        "tone": "Italienisch, informale, amichevole, motivante, personale, breve e non infantile",
         "logged": "✅ Registrato!",
         "today_total": "Oggi finora",
         "remaining": "ancora {remaining} kcal",
@@ -190,6 +192,39 @@ NUTRITION_WORDS = [
     "what should i eat today",
 ]
 
+SUBSTITUTION_WORDS = [
+    # Deutsch
+    "statt",
+    "ersetzen",
+    "austauschen",
+    "alternative",
+    "anstatt",
+    "kann ich",
+    "geht auch",
+    "lieber",
+    # Ungarisch
+    "helyett",
+    "kiváltani",
+    "cserélni",
+    "csere",
+    "alternatíva",
+    "ehetek",
+    "ihatok",
+    "lehet",
+    # Italienisch
+    "invece",
+    "sostituire",
+    "alternativa",
+    "posso mangiare",
+    "posso bere",
+    "al posto di",
+    # English fallback
+    "instead",
+    "replace",
+    "alternative",
+    "swap",
+]
+
 
 def _profile(customer: dict) -> dict:
     profile = customer.get("customer_profiles") or [{}]
@@ -205,6 +240,10 @@ def _language(customer: dict) -> str:
 
 def _cfg(customer: dict) -> dict:
     return LANG[_language(customer)]
+
+
+def _customer_name(customer: dict) -> str:
+    return str(customer.get("first_name") or "").strip()
 
 
 def _norm(text: str) -> str:
@@ -232,10 +271,13 @@ def _num(value):
     return round(value, 1)
 
 
-def _claude_prompt(lang: str) -> str:
+def _claude_prompt(lang: str, customer_name: str = "") -> str:
     c = LANG.get(lang, LANG["de"])
-    return f"""Du bist ein Ernährungs- und Fitness-Assistent.
+    name_hint = f"Der Kunde heißt {customer_name}. Nutze den Namen gelegentlich, aber nicht in jeder Antwort." if customer_name else ""
+
+    return f"""Du bist ein freundlicher Ernährungs- und Fitness-Assistent.
 Sprich mit dem Kunden auf {c['tone']}.
+{name_hint}
 
 Antworte IMMER nur als gültiges JSON.
 
@@ -246,13 +288,13 @@ Wenn der Kunde Essen oder Trinken beschreibt:
   "items": [
     {{"item": "Ei", "qty": 2, "unit": "Stk", "kcal": 156, "protein_g": 13, "carbs_g": 1, "fat_g": 11}}
   ],
-  "reply": "Kurze Antwort auf {c['reply_language']}."
+  "reply": "Kurze, freundliche, motivierende Antwort auf {c['reply_language']}."
 }}
 
 Wenn es normale Unterhaltung ist:
 {{
   "type": "chat",
-  "reply": "Antwort auf {c['reply_language']}."
+  "reply": "Freundliche kurze Antwort auf {c['reply_language']}."
 }}
 
 Wenn es Check-in-Daten sind:
@@ -264,16 +306,21 @@ Wenn es Check-in-Daten sind:
 Regeln:
 - meal_type muss einer dieser Werte sein: fruehstueck, mittag, abend, snack
 - Kalorien und Makros realistisch schätzen
+- Reply freundlich, menschlich, motivierend, aber kurz
+- nicht übertreiben, keine langen Romane
 - nur JSON, kein Markdown
 """
 
 
-def _photo_prompt(lang: str) -> str:
+def _photo_prompt(lang: str, customer_name: str = "") -> str:
     c = LANG.get(lang, LANG["de"])
-    return f"""Du bist ein Ernährungsassistent.
+    name_hint = f"Der Kunde heißt {customer_name}. Nutze den Namen gelegentlich, aber nicht in jeder Antwort." if customer_name else ""
+
+    return f"""Du bist ein freundlicher Ernährungsassistent.
 Analysiere nur Fotos von Essen oder Getränken.
 Bei Personen, Selfies, Körperfotos, Screenshots oder anderen privaten Bildern: ablehnen.
 Sprich auf {c['reply_language']}.
+{name_hint}
 
 Antworte nur als gültiges JSON.
 
@@ -284,7 +331,7 @@ Essen:
   "items": [
     {{"item": "Reis", "qty": 200, "unit": "g", "kcal": 260, "protein_g": 5, "carbs_g": 56, "fat_g": 1}}
   ],
-  "reply": "Kurze Antwort auf {c['reply_language']}."
+  "reply": "Kurze, freundliche, motivierende Antwort auf {c['reply_language']}."
 }}
 
 Kein Essen:
@@ -301,8 +348,42 @@ Unklar:
 """
 
 
+def _substitution_prompt(customer: dict, user_text: str, meal_context: str) -> str:
+    lang = _language(customer)
+    c = _cfg(customer)
+    name = _customer_name(customer)
+    name_hint = f"Der Kunde heißt {name}. Nutze den Namen natürlich, aber nicht übertrieben." if name else ""
+
+    return f"""Du bist ein freundlicher Ernährungscoach.
+Sprich mit dem Kunden auf {c['tone']}.
+{name_hint}
+
+Der Kunde fragt nach einem Lebensmittel-Ersatz oder einer Alternative.
+
+Kundenfrage:
+{user_text}
+
+Aktueller Ernährungsplan-Kontext, falls vorhanden:
+{meal_context}
+
+Aufgabe:
+- Antworte direkt und hilfreich.
+- Gib eine praktische Ersatzmenge, wenn möglich.
+- Achte auf ähnliche Kalorien und ähnliche Makros.
+- Wenn Öl, Sauce, Käse, Zucker oder Nüsse relevant sind, weise kurz darauf hin.
+- Bleibe freundlich, motivierend und kurz.
+- Keine medizinischen Versprechen.
+- Keine lange Tabelle.
+- Antwort nur als normaler Text auf {c['reply_language']}.
+"""
+
+
 async def handle(customer: dict, text: str) -> None:
     """Main entry."""
+    if _contains(text, SUBSTITUTION_WORDS):
+        await _handle_substitution(customer, text)
+        return
+
     if _contains(text, NUTRITION_WORDS):
         await _handle_nutrition(customer)
         return
@@ -312,12 +393,14 @@ async def handle(customer: dict, text: str) -> None:
         return
 
     lang = _language(customer)
+    name = _customer_name(customer)
+
     history = db.recent_messages(customer["id"], limit=10)
     history = [h for h in history if not (h["direction"] == "in" and h["content"] == text)]
     messages = claude_client.build_messages_from_history(history, text)
 
     reply_raw, tokens, model = await claude_client.ask(
-        _claude_prompt(lang),
+        _claude_prompt(lang, name),
         messages,
         max_tokens=800,
     )
@@ -345,6 +428,7 @@ async def handle_photo(customer: dict, photo_bytes: bytes, media_type: str, capt
     """Analyze a food photo."""
     lang = _language(customer)
     c = _cfg(customer)
+    name = _customer_name(customer)
 
     image_b64 = base64.b64encode(photo_bytes).decode("ascii")
 
@@ -359,7 +443,7 @@ async def handle_photo(customer: dict, photo_bytes: bytes, media_type: str, capt
         user_text += f"\nHinweis / note: {caption}"
 
     reply_raw, tokens, model = await claude_client.ask_with_image(
-        _photo_prompt(lang),
+        _photo_prompt(lang, name),
         image_b64,
         media_type,
         user_text,
@@ -383,6 +467,61 @@ async def handle_photo(customer: dict, photo_bytes: bytes, media_type: str, capt
         model,
         tokens,
     )
+
+
+async def _handle_substitution(customer: dict, text: str) -> None:
+    meal_context = _meal_plan_context(customer["id"])
+    prompt = _substitution_prompt(customer, text, meal_context)
+
+    reply, tokens, model = await claude_client.ask(
+        prompt,
+        [{"role": "user", "content": text}],
+        max_tokens=450,
+    )
+
+    await _send_and_log(
+        customer,
+        telegram_agent.escape_html(reply),
+        "substitution",
+        model,
+        tokens,
+    )
+
+
+def _meal_plan_context(customer_id: str) -> str:
+    plan, is_today = _get_meal_plan(customer_id)
+
+    if not plan:
+        return "Kein veröffentlichter Ernährungsplan gefunden."
+
+    meals = plan.get("meals") or []
+
+    if not isinstance(meals, list) or not meals:
+        return "Ein Plan ist vorhanden, aber ohne Mahlzeiten."
+
+    lines = [f"Plan-Datum: {plan.get('plan_date')}"]
+
+    for meal in meals:
+        meal_type = meal.get("meal_type") or meal.get("type") or ""
+        name = meal.get("name") or ""
+        lines.append(f"- {meal_type}: {name}")
+
+        items = meal.get("items") or []
+        if isinstance(items, list):
+            for item in items[:6]:
+                food = item.get("food") or item.get("item") or item.get("name") or ""
+                grams = item.get("grams")
+                kcal = item.get("kcal")
+
+                if food:
+                    detail = f"  • {food}"
+                    if grams:
+                        detail += f" {grams}g"
+                    if kcal:
+                        detail += f" {kcal} kcal"
+                    lines.append(detail)
+
+    return "\n".join(lines[:40])
 
 
 async def _handle_training(customer: dict) -> None:
