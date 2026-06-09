@@ -139,9 +139,10 @@ Noch zu erfassen:
 {missing_list}
 
 ANTWORT-FORMAT
-Antworte IMMER ausschließlich mit EINEM JSON-Block, nichts davor, nichts danach:
+Antworte IMMER ausschließlich als gültiges JSON.
+Kein Text davor, kein Text danach.
 
-```json
+JSON-Struktur:
 {{
   "extracted": {{
     "age": null,
@@ -158,3 +159,241 @@ Antworte IMMER ausschließlich mit EINEM JSON-Block, nichts davor, nichts danach
   "reply": "Deine nächste Nachricht an den Kunden — 1 bis 2 Sätze, eine Frage.",
   "is_complete": false
 }}
+
+REGELN
+- In extracted nur Werte setzen, die du aus der letzten User-Nachricht sicher herausliest.
+- Wenn nichts Neues sicher ist, extracted als leeres Objekt zurückgeben.
+- is_complete nur true, wenn nach dem Merge alle Pflichtfelder vorhanden sind.
+- Wenn is_complete true ist: reply ist ein kurzer motivierender Abschluss-Satz, keine neue Frage.
+- Kein Text außerhalb des JSON.
+"""
+
+
+def _language_from_text(text: str) -> str | None:
+    t = (text or "").strip().lower()
+
+    if t in {"de", "deutsch", "german", "német", "nemet"} or "deutsch" in t:
+        return "de"
+    if t in {"hu", "magyar", "hungarian", "ungarisch", "magyarul"} or "magyar" in t:
+        return "hu"
+    if t in {"it", "italiano", "italian", "italienisch", "olasz"} or "italiano" in t:
+        return "it"
+
+    return None
+
+
+def _profile(customer: dict) -> dict:
+    profile = customer.get("customer_profiles") or []
+    if isinstance(profile, list):
+        return profile[0] if profile else {}
+    if isinstance(profile, dict):
+        return profile
+    return {}
+
+
+def _field_question(lang: str, key: str) -> str:
+    return LANG.get(lang, LANG["de"])["fields"].get(key, key)
+
+
+def _missing_question(lang: str, missing_key: str) -> str:
+    c = LANG.get(lang, LANG["de"])
+    return f"{c['missing_prefix']} {c['fields'].get(missing_key, missing_key)}"
+
+
+def _language_question(customer: dict, lang: str = "de") -> str:
+    first_name = telegram_agent.escape_html(customer.get("first_name") or "")
+    name = first_name if first_name else "!"
+    return LANG[lang]["language_question"].format(name=name)
+
+
+async def start(customer: dict) -> None:
+    """Send the very first intake message."""
+    greeting = _language_question(customer, "de")
+
+    await telegram_agent.send_message(customer["telegram_chat_id"], greeting)
+    db.log_message(customer["id"], "out", greeting, agent_name="intake")
+
+    db.set_conversation_state(
+        customer_id=customer["id"],
+        current_flow="intake",
+        current_step="ask_language",
+        state_data={"collected": {}, "language": None},
+    )
+
+
+async def handle_step(customer: dict, state: dict, user_text: str) -> None:
+    """Single Claude call: extract + reply + completeness check."""
+    state_data = (state or {}).get("state_data", {}) or {}
+    collected = state_data.get("collected", {}) or {}
+    language = state_data.get("language")
+
+    if language not in LANG:
+        detected = _language_from_text(user_text)
+
+        if detected not in LANG:
+            msg = _language_question(customer, "de")
+            await telegram_agent.send_message(customer["telegram_chat_id"], msg)
+            db.log_message(customer["id"], "out", msg, agent_name="intake")
+
+            db.set_conversation_state(
+                customer_id=customer["id"],
+                current_flow="intake",
+                current_step="ask_language",
+                state_data={"collected": collected, "language": None},
+            )
+            return
+
+        language = detected
+        msg = LANG[language]["language_saved"]
+
+        await telegram_agent.send_message(customer["telegram_chat_id"], msg)
+        db.log_message(customer["id"], "out", msg, agent_name="intake")
+
+        db.set_conversation_state(
+            customer_id=customer["id"],
+            current_flow="intake",
+            current_step="ask_age",
+            state_data={"collected": collected, "language": language},
+        )
+        return
+
+    c = LANG[language]
+
+    collected_summary = (
+        "\n".join(f"- {k}: {_fmt(v)}" for k, v in collected.items())
+        if collected
+        else "(noch nichts)"
+    )
+
+    missing = [
+        f"- {key}: {_field_question(language, key)}"
+        for key, _desc in REQUIRED_FIELDS
+        if key not in collected
+    ]
+    missing_list = "\n".join(missing) if missing else "(alle Felder erfasst — setze is_complete=true)"
+
+    system = SYSTEM_PROMPT.format(
+        tone=c["tone"],
+        collected_summary=collected_summary,
+        missing_list=missing_list,
+    )
+
+    history = db.recent_messages(customer["id"], limit=20)
+    history = [
+        h for h in history
+        if h["content"] != user_text or h["direction"] != "in"
+    ]
+
+    messages = claude_client.build_messages_from_history(history, user_text)
+    raw, tokens, model = await claude_client.ask(system, messages, max_tokens=600)
+
+    data = _parse_json(raw)
+
+    if data is None:
+        fallback = c["retry_json"]
+        await telegram_agent.send_message(customer["telegram_chat_id"], fallback)
+        db.log_message(
+            customer["id"],
+            "out",
+            fallback,
+            agent_name="intake",
+            model_used=model,
+            tokens_used=tokens,
+        )
+        return
+
+    extracted = data.get("extracted") or {}
+
+    for k, v in extracted.items():
+        if k not in REQUIRED_KEYS:
+            continue
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        collected[k] = v
+
+    reply_text = telegram_agent.escape_html((data.get("reply") or "").strip())
+    claude_complete = bool(data.get("is_complete"))
+
+    all_present = REQUIRED_KEYS.issubset(collected.keys())
+    is_complete = claude_complete and all_present
+
+    if claude_complete and not all_present:
+        missing_keys = [key for key, _desc in REQUIRED_FIELDS if key not in collected]
+        reply_text = telegram_agent.escape_html(_missing_question(language, missing_keys[0]))
+
+    if not is_complete:
+        done = len(REQUIRED_KEYS & set(collected.keys()))
+        total = len(REQUIRED_KEYS)
+        if done > 0 and reply_text:
+            reply_text = f"({done}/{total}) {reply_text}"
+
+    db.set_conversation_state(
+        customer_id=customer["id"],
+        current_flow="intake" if not is_complete else None,
+        current_step="ask_next" if not is_complete else None,
+        state_data={"collected": collected, "language": language} if not is_complete else {},
+    )
+
+    if reply_text:
+        await telegram_agent.send_message(customer["telegram_chat_id"], reply_text)
+        db.log_message(
+            customer["id"],
+            "out",
+            reply_text,
+            agent_name="intake",
+            model_used=model,
+            tokens_used=tokens,
+        )
+
+    if is_complete:
+        _finalize_intake(customer, collected, language)
+
+        final_msg = c["complete"]
+        await telegram_agent.send_message(customer["telegram_chat_id"], final_msg)
+        db.log_message(customer["id"], "out", final_msg, agent_name="intake")
+
+
+def _parse_json(raw: str) -> dict | None:
+    """Parse JSON aus Claude-Antwort."""
+    if not raw:
+        return None
+
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+def _fmt(v) -> str:
+    if isinstance(v, list):
+        return ", ".join(str(x) for x in v) if v else "(keine)"
+    return str(v)
+
+
+def _finalize_intake(customer: dict, collected: dict, language: str) -> None:
+    """Write profile to DB and mark customer as active."""
+    profile_row = {
+        "customer_id": customer["id"],
+        "language": language,
+        "age": collected.get("age"),
+        "gender": collected.get("gender"),
+        "height_cm": collected.get("height_cm"),
+        "weight_start_kg": collected.get("weight_start_kg"),
+        "weight_target_kg": collected.get("weight_target_kg"),
+        "goal": collected.get("goal"),
+        "experience_level": collected.get("experience_level"),
+        "equipment": collected.get("equipment"),
+        "allergies": collected.get("allergies", []),
+        "food_preferences": collected.get("food_preferences", []),
+    }
+
+    db.db().table("customer_profiles").upsert(profile_row).execute()
+    db.update_customer_status(customer["id"], "active")
+    db.db().table("customers").update({"onboarded_at": "now()"}).eq("id", customer["id"]).execute()
+    db.set_conversation_state(customer["id"], current_flow=None, current_step=None, state_data={})
