@@ -530,7 +530,7 @@ async def _handle_training(customer: dict) -> None:
     plan_resp = (
         db.db()
         .table("training_plans")
-        .select("id, name, current_week, status, updated_at")
+        .select("id, name, current_week, status, updated_at, translations")
         .eq("customer_id", customer["id"])
         .eq("status", "active")
         .order("updated_at", desc=True)
@@ -566,16 +566,54 @@ async def _handle_training(customer: dict) -> None:
     ex_resp = (
         db.db()
         .table("exercises")
-        .select("name, sets, reps_min, reps_max, notes, rest_seconds, sort_order")
+        .select("id, name, sets, reps_min, reps_max, notes, rest_seconds, sort_order")
         .eq("day_id", day["id"])
         .order("sort_order", desc=False)
         .execute()
     )
 
     exercises = ex_resp.data or []
+    plan, day, exercises = _overlay_training_translation(
+        plan, day, exercises, _language(customer)
+    )
     msg = _format_training(c, plan, day, exercises)
 
     await _send_and_log(customer, msg, "training_today", "system", 0)
+
+
+def _overlay_training_translation(
+    plan: dict, day: dict, exercises: list[dict], lang: str
+) -> tuple[dict, dict, list[dict]]:
+    """Legt translations[lang] über das deutsche Original (Fallback: Deutsch)."""
+    if lang == "de":
+        return plan, day, exercises
+
+    tr = (plan.get("translations") or {}).get(lang)
+    if not tr:
+        return plan, day, exercises
+
+    plan = {**plan, "name": tr.get("name") or plan.get("name")}
+
+    day_tr = (tr.get("days") or {}).get(day.get("id")) or {}
+    day = {
+        **day,
+        "title": day_tr.get("title") or day.get("title"),
+        "subtitle": day_tr.get("subtitle") or day.get("subtitle"),
+    }
+
+    ex_tr = tr.get("exercises") or {}
+    new_exercises = []
+    for ex in exercises:
+        e = ex_tr.get(ex.get("id")) or {}
+        new_exercises.append(
+            {
+                **ex,
+                "name": e.get("name") or ex.get("name"),
+                "notes": e.get("notes") or ex.get("notes"),
+            }
+        )
+
+    return plan, day, new_exercises
 
 
 def _format_training(c: dict, plan: dict, day: dict, exercises: list[dict]) -> str:
