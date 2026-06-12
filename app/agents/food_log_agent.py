@@ -682,6 +682,13 @@ async def _handle_nutrition(customer: dict) -> None:
         await _send_and_log(customer, f"{c['no_meal_plan']}\n\n{c['ask_coach']}", "nutrition_plan", "system", 0)
         return
 
+    # Übersetzung des Kunden über das deutsche Original legen (Fallback: Deutsch).
+    lang = _language(customer)
+    if lang != "de":
+        tr = (plan.get("translations") or {}).get(lang)
+        if isinstance(tr, list):
+            plan = {**plan, "meals": tr}
+
     msg = _format_nutrition(c, plan, is_today)
     await _send_and_log(customer, msg, "nutrition_plan", "system", 0)
 
@@ -693,7 +700,7 @@ def _get_meal_plan(customer_id: str) -> tuple[dict | None, bool]:
     resp = (
         db.db()
         .table("meal_plans")
-        .select("id, plan_date, meals, total_kcal, total_protein_g, total_carbs_g, total_fat_g, updated_at")
+        .select("id, plan_date, meals, total_kcal, total_protein_g, total_carbs_g, total_fat_g, updated_at, translations")
         .eq("customer_id", customer_id)
         .eq("status", "published")
         .gte("plan_date", today)
