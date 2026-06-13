@@ -693,6 +693,34 @@ async def _handle_nutrition(customer: dict) -> None:
     await _send_and_log(customer, msg, "nutrition_plan", "system", 0)
 
 
+async def push_meal_plan(customer: dict) -> bool:
+    """Proaktiver Push des aktuellen Ernährungsplans (z.B. wenn der Coach freigibt).
+
+    Sendet nur, wenn der Kunde 'meal_plan_via_telegram' aktiviert hat und ein
+    veröffentlichter Plan existiert. Gibt True zurück, wenn gesendet wurde.
+    """
+    profile = _profile(customer)
+    if not profile.get("meal_plan_via_telegram"):
+        return False
+    if not customer.get("telegram_chat_id"):
+        return False
+
+    plan, is_today = _get_meal_plan(customer["id"])
+    if not plan:
+        return False
+
+    c = _cfg(customer)
+    lang = _language(customer)
+    if lang != "de":
+        tr = (plan.get("translations") or {}).get(lang)
+        if isinstance(tr, list):
+            plan = {**plan, "meals": tr}
+
+    msg = _format_nutrition(c, plan, is_today)
+    await _send_and_log(customer, msg, "nutrition_plan_push", "system", 0)
+    return True
+
+
 def _get_meal_plan(customer_id: str) -> tuple[dict | None, bool]:
     today = _today()
     until = (datetime.now(TZ).date() + timedelta(days=14)).isoformat()
