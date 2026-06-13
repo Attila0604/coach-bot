@@ -30,6 +30,18 @@ def get_customer_by_chat_id(chat_id: int) -> Optional[dict[str, Any]]:
     return resp.data if resp else None
 
 
+def get_customer_by_id(customer_id: str) -> Optional[dict[str, Any]]:
+    resp = (
+        db()
+        .table("customers")
+        .select("*, customer_profiles(*)")
+        .eq("id", customer_id)
+        .maybe_single()
+        .execute()
+    )
+    return resp.data if resp else None
+
+
 def create_customer(coach_id: str, chat_id: int, username: str | None, first_name: str) -> dict[str, Any]:
     resp = (
         db()
