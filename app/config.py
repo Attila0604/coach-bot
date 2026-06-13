@@ -10,6 +10,9 @@ class Settings:
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_WEBHOOK_SECRET: str = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 
+    # Geteiltes Secret für proaktive Pushes aus der Coach-App (z.B. Plan-Freigabe).
+    PUSH_SECRET: str = os.getenv("PUSH_SECRET", "")
+
     # Claude
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     CLAUDE_MODEL_DEFAULT: str = os.getenv(
