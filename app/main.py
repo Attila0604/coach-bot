@@ -11,7 +11,8 @@ from collections import deque
 
 from fastapi import FastAPI, Request, HTTPException, Header
 from app.config import settings
-from app.agents import telegram_agent, router
+from app.agents import telegram_agent, router, food_log_agent
+from app import db
 
 logging.basicConfig(level=settings.LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -58,6 +59,36 @@ def _startup() -> None:
 @app.get("/")
 def health() -> dict:
     return {"status": "ok", "service": "coach-bot"}
+
+
+@app.post("/push/meal-plan")
+async def push_meal_plan_endpoint(
+    request: Request,
+    x_push_secret: str | None = Header(default=None),
+) -> dict:
+    """Proaktiver Push des Ernährungsplans an einen Kunden (von der Coach-App
+    beim Freigeben aufgerufen). Durch ein geteiltes Secret geschützt."""
+    if not settings.PUSH_SECRET:
+        raise HTTPException(status_code=503, detail="Push disabled (no secret set)")
+    if x_push_secret != settings.PUSH_SECRET:
+        raise HTTPException(status_code=403, detail="Bad secret")
+
+    body = await request.json()
+    customer_id = body.get("customer_id")
+    if not customer_id:
+        raise HTTPException(status_code=400, detail="customer_id required")
+
+    customer = db.get_customer_by_id(customer_id)
+    if not customer:
+        return {"ok": False, "error": "customer not found"}
+
+    try:
+        sent = await food_log_agent.push_meal_plan(customer)
+    except Exception:
+        log.exception("push_meal_plan failed")
+        return {"ok": False, "error": "send failed"}
+
+    return {"ok": True, "sent": sent}
 
 
 @app.post("/webhook/telegram")
