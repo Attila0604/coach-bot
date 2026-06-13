@@ -148,6 +148,8 @@ TRAINING_WORDS = [
     "was trainiere ich heute",
     "training heute",
     "heutiges training",
+    "trainingsplan",
+    "trainings plan",
     "was soll ich heute trainieren",
     "übungen heute",
     "uebungen heute",
@@ -157,6 +159,8 @@ TRAINING_WORDS = [
     "mai edzes",
     "edzés ma",
     "edzes ma",
+    "edzésterv",
+    "edzesterv",
     "gyakorlatok ma",
     "allenamento oggi",
     "che allenamento ho oggi",
@@ -169,9 +173,14 @@ TRAINING_WORDS = [
 NUTRITION_WORDS = [
     "was soll ich heute essen",
     "was esse ich heute",
+    "was esse ich",
     "ernährungsplan",
     "ernaehrungsplan",
+    "ernährung",
+    "ernaehrung",
     "essensplan",
+    "speiseplan",
+    "mahlzeitenplan",
     "mahlzeiten heute",
     "essen heute",
     "mit egyek ma",
@@ -181,47 +190,50 @@ NUTRITION_WORDS = [
     "mai etrend",
     "étrend ma",
     "etrend ma",
+    "étrend",
+    "etrend",
+    "étrendem",
+    "etrendem",
+    "diéta",
+    "dieta",
+    "étlap",
+    "etlap",
     "mit kell ennem ma",
     "cosa devo mangiare oggi",
     "piano alimentare",
     "cosa mangio oggi",
     "pasti di oggi",
+    "pasti",
     "dieta di oggi",
+    "menu",
+    "menü",
     "meal plan",
     "nutrition plan",
+    "diet plan",
     "what should i eat today",
 ]
 
 SUBSTITUTION_WORDS = [
-    # Deutsch
+    # Deutsch — nur klare Ersatz-Marker
     "statt",
+    "anstatt",
     "ersetzen",
     "austauschen",
     "alternative",
-    "anstatt",
-    "kann ich",
-    "geht auch",
-    "lieber",
     # Ungarisch
     "helyett",
     "kiváltani",
     "cserélni",
     "csere",
     "alternatíva",
-    "ehetek",
-    "ihatok",
-    "lehet",
     # Italienisch
     "invece",
     "sostituire",
     "alternativa",
-    "posso mangiare",
-    "posso bere",
     "al posto di",
-    # English fallback
+    # English
     "instead",
     "replace",
-    "alternative",
     "swap",
 ]
 
@@ -378,8 +390,16 @@ Aufgabe:
 """
 
 
+PLAN_WORDS_EXACT = {"plan", "mein plan", "terv", "tervem", "piano", "il piano"}
+
+
 async def handle(customer: dict, text: str) -> None:
     """Main entry."""
+    # Bloßes "plan" (ohne Kontext) -> Ernährungsplan (häufigste Tagesabfrage).
+    if _norm(text) in PLAN_WORDS_EXACT:
+        await _handle_nutrition(customer)
+        return
+
     if _contains(text, SUBSTITUTION_WORDS):
         await _handle_substitution(customer, text)
         return
