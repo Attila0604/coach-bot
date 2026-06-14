@@ -10,8 +10,9 @@ import logging
 from collections import deque
 
 from fastapi import FastAPI, Request, HTTPException, Header
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.config import settings
-from app.agents import telegram_agent, router, food_log_agent
+from app.agents import telegram_agent, router, food_log_agent, reminders
 from app import db
 
 logging.basicConfig(level=settings.LOG_LEVEL)
@@ -49,11 +50,31 @@ async def _safe_handle(parsed: dict, default_coach_id: str) -> None:
         log.exception("Error handling update")
 
 
+_scheduler: AsyncIOScheduler | None = None
+
+
 @app.on_event("startup")
 def _startup() -> None:
     missing = settings.validate()
     if missing:
         log.warning("Missing env vars: %s", missing)
+
+    # Trainings-Reminder: jede Minute prüfen, ob etwas fällig ist.
+    global _scheduler
+    try:
+        _scheduler = AsyncIOScheduler()
+        _scheduler.add_job(
+            reminders.run_due_reminders,
+            "interval",
+            minutes=1,
+            id="training_reminders",
+            max_instances=1,
+            coalesce=True,
+        )
+        _scheduler.start()
+        log.info("Reminder-Scheduler gestartet.")
+    except Exception:
+        log.exception("Reminder-Scheduler konnte nicht gestartet werden")
 
 
 @app.get("/")
