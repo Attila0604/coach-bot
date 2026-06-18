@@ -392,9 +392,66 @@ Aufgabe:
 
 PLAN_WORDS_EXACT = {"plan", "mein plan", "terv", "tervem", "piano", "il piano"}
 
+APP_WORDS_EXACT = {
+    "app", "login", "anmelden", "einloggen", "app öffnen", "app oeffnen",
+    "alkalmazás", "alkalmazas", "belépés", "belepes", "applicazione", "accedi",
+}
+
+_APP_LINK_LABEL = {
+    "de": "📲 In der App öffnen",
+    "hu": "📲 Megnyitás az appban",
+    "it": "📲 Apri nell'app",
+}
+_APP_LINK_INTRO = {
+    "de": "Tippe hier, um direkt in deine App zu kommen — kein Passwort nötig:",
+    "hu": "Koppints ide, hogy közvetlenül belépj az appba — jelszó nélkül:",
+    "it": "Tocca qui per entrare subito nell'app — senza password:",
+}
+
+
+def _login_link(customer: dict) -> str | None:
+    """Baut den Ein-Klick-Login-Link (oder None, wenn nicht konfiguriert)."""
+    base = (settings.APP_BASE_URL or "").rstrip("/")
+    if not base:
+        return None
+    token = db.get_or_create_login_token(customer["id"])
+    if not token:
+        return None
+    return f"{base}/login/link?token={token}"
+
+
+def _append_app_link(customer: dict, msg: str) -> str:
+    """Hängt einen dezenten 'In der App öffnen'-Link unter eine Nachricht."""
+    link = _login_link(customer)
+    if not link:
+        return msg
+    label = _APP_LINK_LABEL.get(_language(customer), _APP_LINK_LABEL["de"])
+    return f'{msg}\n\n<a href="{link}">{label}</a>'
+
+
+async def _handle_app_link(customer: dict) -> None:
+    """Antwort auf 'app'/'login': frischer Login-Link."""
+    lang = _language(customer)
+    link = _login_link(customer)
+    if not link:
+        await _send_and_log(
+            customer, "Die App-Anmeldung ist gerade nicht verfügbar.", "app_link", "system", 0
+        )
+        return
+    intro = _APP_LINK_INTRO.get(lang, _APP_LINK_INTRO["de"])
+    label = _APP_LINK_LABEL.get(lang, _APP_LINK_LABEL["de"])
+    await _send_and_log(
+        customer, f'{intro}\n\n<a href="{link}">{label}</a>', "app_link", "system", 0
+    )
+
 
 async def handle(customer: dict, text: str) -> None:
     """Main entry."""
+    # "app"/"login" -> Ein-Klick-Login-Link.
+    if _norm(text) in APP_WORDS_EXACT:
+        await _handle_app_link(customer)
+        return
+
     # Bloßes "plan" (ohne Kontext) -> Ernährungsplan (häufigste Tagesabfrage).
     if _norm(text) in PLAN_WORDS_EXACT:
         await _handle_nutrition(customer)
@@ -596,7 +653,7 @@ async def _handle_training(customer: dict) -> None:
     plan, day, exercises = _overlay_training_translation(
         plan, day, exercises, _language(customer)
     )
-    msg = _format_training(c, plan, day, exercises)
+    msg = _append_app_link(customer, _format_training(c, plan, day, exercises))
 
     await _send_and_log(customer, msg, "training_today", "system", 0)
 
@@ -709,7 +766,7 @@ async def _handle_nutrition(customer: dict) -> None:
         if isinstance(tr, list):
             plan = {**plan, "meals": tr}
 
-    msg = _format_nutrition(c, plan, is_today)
+    msg = _append_app_link(customer, _format_nutrition(c, plan, is_today))
     await _send_and_log(customer, msg, "nutrition_plan", "system", 0)
 
 
@@ -736,7 +793,7 @@ async def push_meal_plan(customer: dict) -> bool:
         if isinstance(tr, list):
             plan = {**plan, "meals": tr}
 
-    msg = _format_nutrition(c, plan, is_today)
+    msg = _append_app_link(customer, _format_nutrition(c, plan, is_today))
     await _send_and_log(customer, msg, "nutrition_plan_push", "system", 0)
     return True
 
