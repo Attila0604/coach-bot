@@ -4,6 +4,8 @@ All DB access goes through this module. Functions return plain dicts /
 lists so agents don't need to know about supabase-py internals.
 """
 from typing import Any, Optional
+import secrets
+from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from app.config import settings
 
@@ -122,3 +124,44 @@ def recent_messages(customer_id: str, limit: int = 20) -> list[dict[str, Any]]:
         .execute()
     )
     return list(reversed(resp.data))
+
+
+# ----- Login-Tokens (Ein-Klick-Login-Link) -----
+
+LOGIN_TOKEN_DAYS = 7
+
+
+def get_or_create_login_token(customer_id: str) -> Optional[str]:
+    """Gibt ein gültiges Login-Token zurück (7 Tage gültig, mehrfach nutzbar).
+
+    Wiederverwendet ein bestehendes, noch gültiges Token, sonst wird ein neues
+    erzeugt. Bei Fehler -> None (Nachricht wird dann einfach ohne Link gesendet).
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        resp = (
+            db()
+            .table("login_tokens")
+            .select("token, expires_at")
+            .eq("customer_id", customer_id)
+            .gt("expires_at", now.isoformat())
+            .order("expires_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        if rows:
+            return rows[0]["token"]
+
+        token = secrets.token_urlsafe(32)
+        expires = now + timedelta(days=LOGIN_TOKEN_DAYS)
+        db().table("login_tokens").insert(
+            {
+                "token": token,
+                "customer_id": customer_id,
+                "expires_at": expires.isoformat(),
+            }
+        ).execute()
+        return token
+    except Exception:
+        return None
