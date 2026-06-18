@@ -26,6 +26,21 @@ _REMINDER = {
     "it": "⏰ <b>Promemoria allenamento</b>\nOggi alle {time}: <b>{title}</b>\nForza! 💪",
 }
 
+_APP_LINK_LABEL = {
+    "de": "📲 In der App öffnen",
+    "hu": "📲 Megnyitás az appban",
+    "it": "📲 Apri nell'app",
+}
+
+
+def _login_link(customer_id: str) -> str | None:
+    """Ein-Klick-Login-Link für die Reminder-Nachricht (oder None)."""
+    base = (settings.APP_BASE_URL or "").rstrip("/")
+    if not base:
+        return None
+    token = db.get_or_create_login_token(customer_id)
+    return f"{base}/login/link?token={token}" if token else None
+
 
 def _lang_of(customer: dict) -> str:
     prof = customer.get("customer_profiles") or [{}]
@@ -130,6 +145,10 @@ async def run_due_reminders() -> None:
             text = _REMINDER[lang].format(
                 time=time_str, title=telegram_agent.escape_html(title)
             )
+            link = _login_link(plan["customer_id"])
+            if link:
+                label = _APP_LINK_LABEL.get(lang, _APP_LINK_LABEL["de"])
+                text += f'\n\n<a href="{link}">{label}</a>'
             try:
                 await telegram_agent.send_message(chat_id, text)
                 db.log_message(
