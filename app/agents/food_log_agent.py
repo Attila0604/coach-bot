@@ -986,6 +986,31 @@ def _parse_json(raw: str) -> dict | None:
     return None
 
 
+# food_logs.meal_type erlaubt per DB-CHECK (food_logs_meal_type_check) nur diese
+# vier Werte. KI-Antworten (v.a. aus dem Foto-Pfad) liefern den Wert teils in der
+# Kundensprache (z.B. "ebéd") -> hier auf die erlaubten Werte normalisieren.
+_MEAL_TYPE_CANON = {
+    # Frühstück
+    "fruehstueck": "fruehstueck", "frühstück": "fruehstueck", "breakfast": "fruehstueck",
+    "reggeli": "fruehstueck", "colazione": "fruehstueck",
+    # Mittag
+    "mittag": "mittag", "mittagessen": "mittag", "lunch": "mittag",
+    "ebéd": "mittag", "ebed": "mittag", "pranzo": "mittag",
+    # Abend
+    "abend": "abend", "abendessen": "abend", "dinner": "abend",
+    "vacsora": "abend", "cena": "abend",
+    # Snack / Zwischenmahlzeit
+    "snack": "snack", "snacks": "snack", "snackek": "snack",
+    "spuntino": "snack", "spuntini": "snack", "merenda": "snack",
+    "uzsonna": "snack", "tízórai": "snack", "tizorai": "snack", "jause": "snack",
+}
+
+
+def _canon_meal_type(value) -> str:
+    """Normalisiert meal_type auf die vom DB-CHECK erlaubten Werte (Fallback: snack)."""
+    return _MEAL_TYPE_CANON.get((str(value or "")).strip().lower(), "snack")
+
+
 async def _handle_food_log(
     customer: dict,
     parsed: dict,
@@ -1008,7 +1033,7 @@ async def _handle_food_log(
     db.db().table("food_logs").insert(
         {
             "customer_id": customer["id"],
-            "meal_type": parsed.get("meal_type", "snack"),
+            "meal_type": _canon_meal_type(parsed.get("meal_type")),
             "raw_description": raw_desc,
             "parsed_items": items,
             "total_kcal": total_kcal,
