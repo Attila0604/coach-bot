@@ -48,6 +48,17 @@ async def _safe_handle(parsed: dict, default_coach_id: str) -> None:
         await router.handle_incoming(parsed, default_coach_id)
     except Exception:
         log.exception("Error handling update")
+        # Bot soll nie komplett stumm bleiben -> kurze Fallback-Antwort (DE/HU).
+        chat_id = parsed.get("chat_id")
+        if chat_id:
+            try:
+                await telegram_agent.send_message(
+                    chat_id,
+                    "⚠️ Etwas ist schiefgelaufen — bitte gleich nochmal versuchen.\n"
+                    "⚠️ Valami hiba történt — kérlek, próbáld újra.",
+                )
+            except Exception:
+                log.exception("Fallback-Antwort fehlgeschlagen")
 
 
 _scheduler: AsyncIOScheduler | None = None
