@@ -29,6 +29,7 @@ class Settings:
     DEFAULT_COACH_ID: str = os.getenv("DEFAULT_COACH_ID", "")
     TZ: str = os.getenv("TZ", "Europe/Vienna")
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    DEFAULT_COACH_ID: str = os.getenv("DEFAULT_COACH_ID", "")
 
     def validate(self) -> list[str]:
         """Return list of missing required env vars."""
@@ -38,6 +39,7 @@ class Settings:
             "ANTHROPIC_API_KEY",
             "SUPABASE_URL",
             "SUPABASE_SERVICE_KEY",
+            "DEFAULT_COACH_ID",
         ]
         for key in required:
             if not getattr(self, key):
